@@ -1,0 +1,13 @@
+{
+  "name": "goensemble",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "mobile": "bun --cwd apps/mobile start",
+    "android": "bun --cwd apps/mobile android",
+    "ios": "bun --cwd apps/mobile ios"
+  }
+}
