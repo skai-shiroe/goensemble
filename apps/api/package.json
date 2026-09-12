@@ -1,0 +1,21 @@
+{
+  "name": "@goensemble/api",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "typecheck": "bun x tsc --noEmit"
+  },
+  "dependencies": {
+    "@elysiajs/cors": "^1.4.2",
+    "@goensemble/database": "*",
+    "@sinclair/typebox": "^0.34.34",
+    "@supabase/supabase-js": "^2.116.0",
+    "elysia": "^1.4.30"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "typescript": "~6.0.3"
+  }
+}

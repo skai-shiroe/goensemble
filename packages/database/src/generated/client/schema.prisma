@@ -1,0 +1,148 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/client"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============ Modele du MVP - derive du document d'etape D ============
+
+enum TripStatus {
+  ACTIVE
+  CANCELLED
+  COMPLETED
+}
+
+enum BookingStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  CANCELLED
+  COMPLETED
+}
+
+enum ReportStatus {
+  OPEN
+  RESOLVED
+  DISMISSED
+}
+
+model User {
+  id              String    @id @default(uuid()) @db.Uuid
+  phone           String    @unique
+  fullName        String?
+  photoUrl        String?
+  rating          Float     @default(0)
+  tripsCount      Int       @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  vehicles        Vehicle[]
+  tripsDriven     Trip[]    @relation("TripDriver")
+  tripsBooked     Booking[]
+  ratingsGiven    Rating[]  @relation("RatingAuthor")
+  ratingsReceived Rating[]  @relation("RatingTarget")
+  reportsMade     Report[]  @relation("ReportAuthor")
+  reportsReceived Report[]  @relation("ReportTarget")
+  devices         Device[]
+}
+
+model Vehicle {
+  id        String   @id @default(uuid()) @db.Uuid
+  ownerId   String   @db.Uuid
+  owner     User     @relation(fields: [ownerId], references: [id])
+  model     String
+  plate     String   @unique
+  color     String?
+  seats     Int      @default(4)
+  createdAt DateTime @default(now())
+  trips     Trip[]
+}
+
+model Trip {
+  id            String     @id @default(uuid()) @db.Uuid
+  driverId      String     @db.Uuid
+  driver        User       @relation("TripDriver", fields: [driverId], references: [id])
+  vehicleId     String     @db.Uuid
+  vehicle       Vehicle    @relation(fields: [vehicleId], references: [id])
+  fromLabel     String
+  toLabel       String
+  fromLat       Float
+  fromLng       Float
+  toLat         Float
+  toLng         Float
+  departureTime DateTime
+  arrivalTime   DateTime?
+  contribution  Int        @default(0)
+  seats         Int        @default(4)
+  isRecurring   Boolean    @default(false)
+  status        TripStatus @default(ACTIVE)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  waypoints     Waypoint[]
+  bookings      Booking[]
+
+  @@index([fromLat, fromLng])
+  @@index([toLat, toLng])
+  @@index([departureTime])
+}
+
+model Waypoint {
+  id     String @id @default(uuid()) @db.Uuid
+  tripId String @db.Uuid
+  trip   Trip   @relation(fields: [tripId], references: [id])
+  label  String
+  lat    Float
+  lng    Float
+  order  Int
+}
+
+model Booking {
+  id          String        @id @default(uuid()) @db.Uuid
+  tripId      String        @db.Uuid
+  trip        Trip          @relation(fields: [tripId], references: [id])
+  passengerId String        @db.Uuid
+  passenger   User          @relation(fields: [passengerId], references: [id])
+  status      BookingStatus @default(PENDING)
+  seats       Int           @default(1)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@unique([tripId, passengerId])
+}
+
+model Rating {
+  id        String   @id @default(uuid()) @db.Uuid
+  tripId    String   @db.Uuid
+  authorId  String   @db.Uuid
+  author    User     @relation("RatingAuthor", fields: [authorId], references: [id])
+  targetId  String   @db.Uuid
+  target    User     @relation("RatingTarget", fields: [targetId], references: [id])
+  score     Int
+  comment   String?
+  createdAt DateTime @default(now())
+}
+
+model Device {
+  id        String   @id @default(uuid()) @db.Uuid
+  ownerId   String   @db.Uuid
+  owner     User     @relation(fields: [ownerId], references: [id])
+  token     String
+  platform  String?
+  createdAt DateTime @default(now())
+}
+
+model Report {
+  id        String       @id @default(uuid()) @db.Uuid
+  authorId  String       @db.Uuid
+  author    User         @relation("ReportAuthor", fields: [authorId], references: [id])
+  targetId  String       @db.Uuid
+  target    User         @relation("ReportTarget", fields: [targetId], references: [id])
+  reason    String
+  status    ReportStatus @default(OPEN)
+  createdAt DateTime     @default(now())
+}
+87362
