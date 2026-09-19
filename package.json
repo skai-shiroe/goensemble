@@ -6,9 +6,9 @@
     "packages/*"
   ],
   "scripts": {
-    "mobile": "bun --cwd apps/mobile start",
-    "android": "bun --cwd apps/mobile android",
-    "ios": "bun --cwd apps/mobile ios",
+    "mobile": "METRO_FILE_MAP_WATCHER_MAX_WAIT_TIME=600000 bun --cwd apps/mobile start",
+    "android": "METRO_FILE_MAP_WATCHER_MAX_WAIT_TIME=600000 bun --cwd apps/mobile android",
+    "ios": "METRO_FILE_MAP_WATCHER_MAX_WAIT_TIME=600000 bun --cwd apps/mobile ios",
     "api": "bun run --cwd apps/api dev",
     "db:generate": "bun run --cwd packages/database generate",
     "db:migrate": "bun run --cwd packages/database migrate:dev"

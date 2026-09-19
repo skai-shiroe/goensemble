@@ -13,7 +13,7 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-export const tripsRoutes = new Elysia({ prefix: '/trips' })
+export const tripsRoutes = new Elysia({ prefix: '/trips', tags: ['Trips'] })
   .post('/', async ({ headers, body, set }) => {
     const auth = await getAuthUser(headers.authorization);
     if (!auth) { set.status = 401; return { error: 'Authentification requise' }; }

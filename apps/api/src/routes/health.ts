@@ -1,7 +1,7 @@
 import { Elysia } from 'elysia';
 import prisma from '@goensemble/database';
 
-export const healthRoutes = new Elysia({ prefix: '/health' }).get('/', async () => {
+export const healthRoutes = new Elysia({ prefix: '/health', tags: ['Health'] }).get('/', async () => {
   try {
     await prisma.$queryRaw`SELECT 1`;
     return { status: 'ok', db: 'connected', time: new Date().toISOString() };

@@ -3,7 +3,7 @@ import { t } from 'elysia';
 import prisma from '@goensemble/database';
 import { getAuthUser } from '../lib/auth';
 
-export const usersRoutes = new Elysia({ prefix: '/users' })
+export const usersRoutes = new Elysia({ prefix: '/users', tags: ['Users'] })
   .get('/me', async ({ headers, set }) => {
     const auth = await getAuthUser(headers.authorization);
     if (!auth) { set.status = 401; return { error: 'Authentification requise' }; }

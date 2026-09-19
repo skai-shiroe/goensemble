@@ -13,7 +13,7 @@ function asHttpError(message: string, status: number): Error & { status: number 
 // Anti-surreservation : verrouillage de la ligne Trip (FOR UPDATE)
 // + comptage des places ACCEPTED avant insertion (transaction).
 
-export const bookingsRoutes = new Elysia({ prefix: '/bookings' })
+export const bookingsRoutes = new Elysia({ prefix: '/bookings', tags: ['Bookings'] })
   .post('/', async ({ headers, body, set }) => {
     const auth = await getAuthUser(headers.authorization);
     if (!auth) { set.status = 401; return { error: 'Authentification requise' }; }

@@ -1,4 +1,4 @@
-import { supabase, supabaseAnon } from './src/lib/supabase';
+import { supabase, supabaseAnon } from '../src/lib/supabase';
 
 const api = 'http://localhost:3000';
 const stamp = Date.now().toString().slice(-7);
