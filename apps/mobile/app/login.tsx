@@ -1,14 +1,15 @@
 import { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import { router } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
 import PrimaryButton from '@/components/PrimaryButton';
 import { colors, spacing, typography } from '@/theme';
 import { supabase, AUTH_REDIRECT_URL } from '@/lib/supabase';
+import { completeOAuthCallback, parseCallbackUrl } from '@/lib/auth';
 
 /**
  * Connexion — Google OAuth via Supabase (PKCE + deep link).
  * Flux : authorize URL -> navigateur systeme -> goensemble://auth-callback
+ * La session etablie declenche la bascule du layout racine vers (tabs).
  */
 export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
@@ -27,33 +28,10 @@ export default function LoginScreen() {
       const result = await WebBrowser.openAuthSessionAsync(data.url, AUTH_REDIRECT_URL);
       if (result.type !== 'success' || !result.url) return; // annule par l'utilisateur
 
-      // PKCE : ?code=... (defaut supabase-js v2) ; implicit : #access_token=...
-      const parseParams = (src: string): Record<string, string> => {
-        const out: Record<string, string> = {};
-        for (const pair of src.split('&')) {
-          const idx = pair.indexOf('=');
-          if (idx > 0) out[pair.slice(0, idx)] = decodeURIComponent(pair.slice(idx + 1));
-        }
-        return out;
-      };
-      const query = parseParams(result.url.split('?')[1]?.split('#')[0] ?? '');
-      const fragment = parseParams(result.url.split('#')[1] ?? '');
-
-      if (query.code) {
-        // Flow PKCE : echanger le code contre la session
-        const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(query.code);
-        if (exchangeError) throw exchangeError;
-      } else if (fragment.access_token && fragment.refresh_token) {
-        // Flow implicit : session directe depuis les tokens
-        const { error: sessionError } = await supabase.auth.setSession({
-          access_token: fragment.access_token,
-          refresh_token: fragment.refresh_token,
-        });
-        if (sessionError) throw sessionError;
-      } else {
-        throw new Error(query.error ?? fragment.error ?? 'Callback OAuth sans code ni tokens');
-      }
-      router.replace('/(tabs)');
+      // La session peut aussi etre etablie par /auth-callback (deep link) :
+      // completeOAuthCallback dedoublonne et tolere les courses.
+      await completeOAuthCallback(parseCallbackUrl(result.url));
+      // Pas de navigation ici : le layout racine (Stack.Protected) bascule vers (tabs).
     } catch (e) {
       setError((e as Error).message);
     } finally {

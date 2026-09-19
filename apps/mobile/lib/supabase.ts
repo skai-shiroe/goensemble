@@ -1,5 +1,5 @@
 import 'react-native-url-polyfill/auto';
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import { createClient } from '@supabase/supabase-js';
 
 type AuthStorage = {
@@ -51,6 +51,16 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     detectSessionInUrl: false,
   },
 });
+
+// React Native : le refresh automatique doit etre coupe quand l'app passe en
+// arriere-plan (ex. ouverture du navigateur OAuth) et relance au retour.
+// Recommandation officielle Supabase pour React Native.
+if (Platform.OS !== 'web') {
+  AppState.addEventListener('change', (state) => {
+    if (state === 'active') supabase.auth.startAutoRefresh();
+    else supabase.auth.stopAutoRefresh();
+  });
+}
 
 // Deep link de retour OAuth (scheme declare dans app.json)
 export const AUTH_REDIRECT_URL = 'goensemble://auth-callback';
