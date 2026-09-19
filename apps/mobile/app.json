@@ -15,7 +15,8 @@
       "supportsTablet": true
     },
     "android": {
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.goensemble.app"
     },
     "web": {
       "bundler": "metro",
@@ -23,6 +24,13 @@
     },
     "plugins": [
       "expo-router"
-    ]
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "d420905d-a2ab-40da-afa0-fc68f61d52da"
+      }
+    },
+    "owner": "skai-devs-team"
   }
 }

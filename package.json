@@ -12,5 +12,13 @@
     "api": "bun run --cwd apps/api dev",
     "db:generate": "bun run --cwd packages/database generate",
     "db:migrate": "bun run --cwd packages/database migrate:dev"
+  },
+  "module": "index.ts",
+  "type": "module",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
   }
 }

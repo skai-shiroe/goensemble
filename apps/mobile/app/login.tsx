@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
+import { router } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
 import PrimaryButton from '@/components/PrimaryButton';
 import { colors, spacing, typography } from '@/theme';
@@ -26,23 +27,33 @@ export default function LoginScreen() {
       const result = await WebBrowser.openAuthSessionAsync(data.url, AUTH_REDIRECT_URL);
       if (result.type !== 'success' || !result.url) return; // annule par l'utilisateur
 
-      // Tokens dans le fragment : #access_token=...&refresh_token=...
-      const fragment = result.url.split('#')[1] ?? '';
-      const params: Record<string, string> = {};
-      for (const pair of fragment.split('&')) {
-        const idx = pair.indexOf('=');
-        if (idx > 0) params[pair.slice(0, idx)] = decodeURIComponent(pair.slice(idx + 1));
-      }
+      // PKCE : ?code=... (defaut supabase-js v2) ; implicit : #access_token=...
+      const parseParams = (src: string): Record<string, string> => {
+        const out: Record<string, string> = {};
+        for (const pair of src.split('&')) {
+          const idx = pair.indexOf('=');
+          if (idx > 0) out[pair.slice(0, idx)] = decodeURIComponent(pair.slice(idx + 1));
+        }
+        return out;
+      };
+      const query = parseParams(result.url.split('?')[1]?.split('#')[0] ?? '');
+      const fragment = parseParams(result.url.split('#')[1] ?? '');
 
-      const accessToken = params.access_token;
-      const refreshToken = params.refresh_token;
-      if (accessToken && refreshToken) {
+      if (query.code) {
+        // Flow PKCE : echanger le code contre la session
+        const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(query.code);
+        if (exchangeError) throw exchangeError;
+      } else if (fragment.access_token && fragment.refresh_token) {
+        // Flow implicit : session directe depuis les tokens
         const { error: sessionError } = await supabase.auth.setSession({
-          access_token: accessToken,
-          refresh_token: refreshToken,
+          access_token: fragment.access_token,
+          refresh_token: fragment.refresh_token,
         });
         if (sessionError) throw sessionError;
+      } else {
+        throw new Error(query.error ?? fragment.error ?? 'Callback OAuth sans code ni tokens');
       }
+      router.replace('/(tabs)');
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -62,7 +73,7 @@ export default function LoginScreen() {
         {loading ? (
           <Text style={styles.loading}>Connexion en cours...</Text>
         ) : (
-          <PrimaryButton title="🔴  Continuer avec Google" onPress={signInWithGoogle} />
+          <PrimaryButton title="  Continuer avec Google" onPress={signInWithGoogle} />
         )}
         {error && <Text style={styles.error}>{error}</Text>}
       </View>

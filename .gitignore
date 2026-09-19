@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+bun.lock
 
 # Dependencies
 node_modules/
