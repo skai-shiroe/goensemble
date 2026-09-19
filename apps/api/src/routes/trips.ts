@@ -2,16 +2,8 @@ import { Elysia } from 'elysia';
 import { t } from 'elysia';
 import prisma from '@goensemble/database';
 import { getAuthUser } from '../lib/auth';
-
-function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6371;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLng = ((lng2 - lng1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
+import { acceptedBookingsInclude, haversineKm, withAvailableSeats } from '../lib/trips';
+import { clampLimit, isUuid } from '../lib/util';
 
 export const tripsRoutes = new Elysia({ prefix: '/trips', tags: ['Trips'] })
   .post('/', async ({ headers, body, set }) => {
@@ -68,24 +60,42 @@ export const tripsRoutes = new Elysia({ prefix: '/trips', tags: ['Trips'] })
       ),
     }),
   })
-  .get('/search', async ({ query }) => {
+  .get('/search', async ({ query, headers }) => {
+    const auth = await getAuthUser(headers.authorization);
     const fromLat = Number(query.fromLat);
     const fromLng = Number(query.fromLng);
     const toLat = Number(query.toLat);
     const toLng = Number(query.toLng);
-    if ([fromLat, fromLng, toLat, toLng].some((v) => Number.isNaN(v))) return [] as unknown[];
+    const coords = [fromLat, fromLng, toLat, toLng];
+    const hasCoords = coords.every((v) => Number.isFinite(v));
+    const q = typeof query.q === 'string' ? query.q.trim() : '';
+    const limit = clampLimit(query.limit);
 
     const trips = await prisma.trip.findMany({
       where: {
         status: 'ACTIVE',
         departureTime: { gte: new Date() },
+        // On ne propose jamais ses propres trajets
+        ...(auth ? { driverId: { not: auth.id } } : {}),
+        ...(q
+          ? {
+              OR: [
+                { fromLabel: { contains: q, mode: 'insensitive' as const } },
+                { toLabel: { contains: q, mode: 'insensitive' as const } },
+              ],
+            }
+          : {}),
       },
-      include: { driver: true, vehicle: true },
-      take: 100,
+      include: { driver: true, vehicle: true, ...acceptedBookingsInclude },
+      orderBy: hasCoords ? undefined : { departureTime: 'asc' },
+      take: hasCoords ? 100 : limit,
     });
 
+    const withSeats = trips.map(withAvailableSeats);
+    if (!hasCoords) return withSeats;
+
     // Matching V1 : tri par proximite du depart + arrivee (Haversine)
-    return trips
+    return withSeats
       .map((trip) => ({
         ...trip,
         matchScore:
@@ -93,5 +103,59 @@ export const tripsRoutes = new Elysia({ prefix: '/trips', tags: ['Trips'] })
           haversineKm(toLat, toLng, trip.toLat, trip.toLng),
       }))
       .sort((a, b) => a.matchScore - b.matchScore)
-      .slice(0, 50);
+      .slice(0, limit);
+  }, {
+    query: t.Object({
+      fromLat: t.Optional(t.String()),
+      fromLng: t.Optional(t.String()),
+      toLat: t.Optional(t.String()),
+      toLng: t.Optional(t.String()),
+      q: t.Optional(t.String()),
+      limit: t.Optional(t.String()),
+    }),
+  })
+  .get('/mine', async ({ headers, query, set }) => {
+    const auth = await getAuthUser(headers.authorization);
+    if (!auth) { set.status = 401; return { error: 'Authentification requise' }; }
+
+    const upcoming = query.upcoming === 'true';
+    const trips = await prisma.trip.findMany({
+      where: {
+        driverId: auth.id,
+        ...(upcoming ? { status: 'ACTIVE' as const, departureTime: { gte: new Date() } } : {}),
+      },
+      include: { driver: true, vehicle: true, waypoints: true, ...acceptedBookingsInclude },
+      orderBy: { departureTime: upcoming ? 'asc' : 'desc' },
+      take: clampLimit(query.limit),
+    });
+    return trips.map(withAvailableSeats);
+  }, {
+    query: t.Object({
+      upcoming: t.Optional(t.String()),
+      limit: t.Optional(t.String()),
+    }),
+  })
+  .get('/:id', async ({ headers, params, set }) => {
+    if (!isUuid(params.id)) { set.status = 404; return { error: 'Trajet introuvable' }; }
+
+    const trip = await prisma.trip.findUnique({
+      where: { id: params.id },
+      include: { driver: true, vehicle: true, waypoints: true, ...acceptedBookingsInclude },
+    });
+    if (!trip) { set.status = 404; return { error: 'Trajet introuvable' }; }
+
+    // Statut de la demande du passager connecte (null si non connecte / conducteur)
+    const auth = await getAuthUser(headers.authorization);
+    let myBooking: { id: string; status: string; seats: number } | null = null;
+    if (auth) {
+      const booking = await prisma.booking.findFirst({
+        where: { tripId: trip.id, passengerId: auth.id },
+        select: { id: true, status: true, seats: true },
+      });
+      myBooking = booking ?? null;
+    }
+
+    return { ...withAvailableSeats(trip), myBooking };
+  }, {
+    params: t.Object({ id: t.String() }),
   });

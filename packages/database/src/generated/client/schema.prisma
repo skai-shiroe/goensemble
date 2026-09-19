@@ -145,4 +145,3 @@ model Report {
   status    ReportStatus @default(OPEN)
   createdAt DateTime     @default(now())
 }
-87362

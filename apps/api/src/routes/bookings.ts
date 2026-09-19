@@ -2,6 +2,7 @@ import { Elysia } from 'elysia';
 import { t } from 'elysia';
 import prisma from '@goensemble/database';
 import { getAuthUser } from '../lib/auth';
+import { isUuid } from '../lib/util';
 
 type FlatTrip = { id: string; driver_id: string; seats: number };
 type BookingStatusLiteral = 'ACCEPTED' | 'REJECTED' | 'CANCELLED';
@@ -14,9 +15,32 @@ function asHttpError(message: string, status: number): Error & { status: number 
 // + comptage des places ACCEPTED avant insertion (transaction).
 
 export const bookingsRoutes = new Elysia({ prefix: '/bookings', tags: ['Bookings'] })
+  .get('/mine', async ({ headers, set }) => {
+    const auth = await getAuthUser(headers.authorization);
+    if (!auth) { set.status = 401; return { error: 'Authentification requise' }; }
+
+    // asPassenger : mes demandes ; asDriver : demandes recues sur mes trajets
+    const [asPassenger, asDriver] = await Promise.all([
+      prisma.booking.findMany({
+        where: { passengerId: auth.id },
+        include: { trip: { include: { driver: true, vehicle: true } } },
+        orderBy: { createdAt: 'desc' },
+        take: 100,
+      }),
+      prisma.booking.findMany({
+        where: { trip: { driverId: auth.id } },
+        include: { trip: { include: { vehicle: true } }, passenger: true },
+        orderBy: { createdAt: 'desc' },
+        take: 100,
+      }),
+    ]);
+
+    return { asPassenger, asDriver };
+  })
   .post('/', async ({ headers, body, set }) => {
     const auth = await getAuthUser(headers.authorization);
     if (!auth) { set.status = 401; return { error: 'Authentification requise' }; }
+    if (!isUuid(body.tripId)) { set.status = 404; return { error: 'Trajet introuvable' }; }
     // Assure que le passager existe cote app (FK User)
     await prisma.user.upsert({
       where: { id: auth.id },
@@ -65,6 +89,7 @@ export const bookingsRoutes = new Elysia({ prefix: '/bookings', tags: ['Bookings
   .patch('/:id', async ({ headers, params, body, set }) => {
     const auth = await getAuthUser(headers.authorization);
     if (!auth) { set.status = 401; return { error: 'Authentification requise' }; }
+    if (!isUuid(params.id)) { set.status = 404; return { error: 'Reservation introuvable' }; }
 
     const booking = await prisma.booking.findUnique({
       where: { id: params.id },
