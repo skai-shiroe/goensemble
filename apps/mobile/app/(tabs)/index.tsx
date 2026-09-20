@@ -1,15 +1,55 @@
 import { useRouter } from 'expo-router';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
 import PrimaryButton from '@/components/PrimaryButton';
+import TripCard from '@/components/TripCard';
+import EmptyState from '@/components/EmptyState';
 import { colors, radius, spacing, typography } from '@/theme';
-import { mockMyBookings, mockMyTrips, mockTrips } from '@/mock';
+import { api, mapApiTrip } from '@/lib/api';
+import type { ApiBooking } from '@/lib/api';
+import type { Trip } from '@/types';
 
 /**
- * Accueil — action principale (parcours UX, Étape B) :
- * deux raccourcis + aperçu du prochain trajet.
+ * Accueil — données réelles via l'API :
+ * prochains trajets conduits + suggestions + réservation en cours.
  */
 export default function HomeScreen() {
   const router = useRouter();
+
+  const [nextTrip, setNextTrip] = useState<Trip | null>(null);
+  const [suggestions, setSuggestions] = useState<Trip[]>([]);
+  const [myBooking, setMyBooking] = useState<Trip | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const loadData = useCallback(async () => {
+    try {
+      setLoading(true);
+      const [mine, search, bookings] = await Promise.allSettled([
+        api.getMyTrips(true),
+        api.searchTrips({ limit: 5 }),
+        api.getMyBookings(),
+      ]);
+
+      if (mine.status === 'fulfilled' && mine.value.length > 0) {
+        setNextTrip(mapApiTrip(mine.value[0], 'driver'));
+      }
+      if (search.status === 'fulfilled') {
+        setSuggestions(search.value.map((t) => mapApiTrip(t, 'passenger')));
+      }
+      if (bookings.status === 'fulfilled' && bookings.value.asPassenger.length > 0) {
+        const first = bookings.value.asPassenger[0] as ApiBooking;
+        setMyBooking(mapApiTrip(first.trip, 'passenger'));
+      }
+    } catch (e) {
+      if (__DEV__) console.warn('[accueil] API indisponible:', (e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -22,43 +62,46 @@ export default function HomeScreen() {
         <PrimaryButton title="🚗  Partager mon trajet" variant="outline" onPress={() => router.push('/(tabs)/publier')} />
       </View>
 
-      {mockMyTrips.length > 0 && (
+      {loading && (
+        <View style={styles.loading}>
+          <ActivityIndicator size="large" color={colors.primary} />
+        </View>
+      )}
+
+      {nextTrip && !loading && (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Prochain trajet</Text>
           <View style={styles.nextTrip}>
             <Text style={styles.nextRoute}>
-              {mockMyTrips[0].departure} → {mockMyTrips[0].destination}
+              {nextTrip.departure} → {nextTrip.destination}
             </Text>
-            <Text style={styles.nextTime}>{mockMyTrips[0].departureTime}</Text>
+            <Text style={styles.nextTime}>{nextTrip.departureTime}</Text>
           </View>
         </View>
       )}
 
-      <View style={styles.section}>
+                  <View style={styles.section}>
         <Text style={styles.sectionTitle}>Trajets qui pourraient vous intéresser</Text>
-        {mockTrips.slice(0, 2).map((trip) => (
-          <Pressable
-            key={trip.id}
-            style={({ pressed }) => [styles.suggestionCard, pressed && { opacity: 0.85 }]}
-            onPress={() => router.push(`/trajet/${trip.id}`)}
-          >
-            <Text style={styles.suggestRoute}>{trip.departure} → {trip.destination}</Text>
-            <Text style={styles.suggestMeta}>
-              {trip.departureTime} • {trip.availableSeats}/{trip.totalSeats} places • {trip.contribution} F
-            </Text>
-          </Pressable>
-        ))}
+        {!loading && suggestions.length === 0 ? (
+          <EmptyState
+            icon="🗺️"
+            title="Aucun trajet trouvé"
+            subtitle="Essayez de publier votre trajet ou relancez plus tard."
+          />
+        ) : (
+          suggestions.map((trip) => <TripCard key={trip.id} trip={trip} />)
+        )}
       </View>
 
-      {mockMyBookings.length > 0 && (
+      {myBooking && (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Ma réservation du jour</Text>
           <View style={styles.nextTrip}>
             <Text style={styles.nextRoute}>
-              {mockMyBookings[0].departure} → {mockMyBookings[0].destination}
+              {myBooking.departure} → {myBooking.destination}
             </Text>
             <Text style={styles.nextTime}>
-              avec {mockMyBookings[0].driver.fullName} • {mockMyBookings[0].departureTime}
+              avec {myBooking.driver.fullName} • {myBooking.departureTime}
             </Text>
           </View>
         </View>
@@ -93,5 +136,6 @@ const styles = StyleSheet.create({
     marginBottom: spacing(3),
   },
   suggestRoute: { ...typography.body, fontWeight: '700' },
-  suggestMeta: { ...typography.secondary, marginTop: spacing(1) },
+    suggestMeta: { ...typography.secondary, marginTop: spacing(1) },
+  loading: { marginTop: spacing(6), alignSelf: 'center' },
 });

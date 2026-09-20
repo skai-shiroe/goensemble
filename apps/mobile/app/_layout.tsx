@@ -4,6 +4,7 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import type { Session } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
+import { ProfileGateProvider, useProfileGate } from '@/lib/profile-gate';
 import { colors } from '@/theme';
 
 /**
@@ -45,19 +46,44 @@ export default function RootLayout() {
     };
   }, []);
 
-  if (loading) {
-    return (
-      <View style={styles.loading}>
-        <ActivityIndicator size="large" color={colors.primary} />
-      </View>
-    );
-  }
+  if (loading) return <Loading />;
+
+  return (
+    <ProfileGateProvider session={session}>
+      <RootNavigator session={session} />
+    </ProfileGateProvider>
+  );
+}
+
+/** Écran d'attente commun (restauration de session + état du profil). */
+function Loading() {
+  return (
+    <View style={styles.loading}>
+      <ActivityIndicator size="large" color={colors.primary} />
+    </View>
+  );
+}
+
+/**
+ * Gardes déclaratifs : la session commande login <-> app, et `profileComplete`
+ * (GET /users/me) commande onboarding du téléphone <-> onglets. Aucune
+ * navigation impérative → aucun rebond, aucune course.
+ */
+function RootNavigator({ session }: { session: Session | null }) {
+  const gate = useProfileGate();
+
+  // On attend de connaître l'état du profil : évite d'afficher les onglets
+  // puis de sauter vers l'onboarding.
+  if (session && gate.loading) return <Loading />;
 
   return (
     <>
       <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Protected guard={!!session}>
+        <Stack.Protected guard={!!session && gate.complete}>
           <Stack.Screen name="(tabs)" />
+        </Stack.Protected>
+        <Stack.Protected guard={!!session && !gate.complete}>
+          <Stack.Screen name="profil-setup" options={{ animation: 'none' }} />
         </Stack.Protected>
         <Stack.Protected guard={!session}>
           <Stack.Screen name="login" />

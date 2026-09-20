@@ -2,10 +2,18 @@ import { Elysia } from 'elysia';
 import { t } from 'elysia';
 import prisma from '@goensemble/database';
 import { getAuthUser } from '../lib/auth';
-import { isUuid } from '../lib/util';
+import { isUuid, normalizeTogoPhone } from '../lib/util';
 
 type FlatTrip = { id: string; driver_id: string; seats: number };
 type BookingStatusLiteral = 'ACCEPTED' | 'REJECTED' | 'CANCELLED';
+
+/**
+ * Options des transactions interactives : Supabase est derrière pgbouncer
+ * (port 6543) et l'acquisition d'une connexion dédiée peut dépasser le défaut
+ * Prisma (maxWait 2 s / timeout 5 s), ce qui provoquait des échecs
+ * intermittents « Transaction already closed ».
+ */
+const TX_OPTIONS = { maxWait: 10_000, timeout: 15_000 };
 
 function asHttpError(message: string, status: number): Error & { status: number } {
   return Object.assign(new Error(message), { status });
@@ -41,11 +49,16 @@ export const bookingsRoutes = new Elysia({ prefix: '/bookings', tags: ['Bookings
     const auth = await getAuthUser(headers.authorization);
     if (!auth) { set.status = 401; return { error: 'Authentification requise' }; }
     if (!isUuid(body.tripId)) { set.status = 404; return { error: 'Trajet introuvable' }; }
-    // Assure que le passager existe cote app (FK User)
+    // Assure que le passager existe cote app (FK User). Placeholder unique par
+    // utilisateur : `''` (comptes OAuth) ne doit jamais etre stocke (colonne @unique).
     await prisma.user.upsert({
       where: { id: auth.id },
       update: {},
-      create: { id: auth.id, phone: auth.phone ?? 'inconnu', fullName: 'Passager' },
+      create: {
+        id: auth.id,
+        phone: normalizeTogoPhone(auth.phone) ?? `pending:${auth.id}`,
+        fullName: 'Passager',
+      },
     });
     const requestedSeats = body.seats ?? 1;
 
@@ -76,7 +89,7 @@ export const bookingsRoutes = new Elysia({ prefix: '/bookings', tags: ['Bookings
           data: { tripId: body.tripId, passengerId: auth.id, seats: requestedSeats },
           include: { trip: { include: { driver: true, vehicle: true } }, passenger: true },
         });
-      });
+      }, TX_OPTIONS);
       return booking;
     } catch (error) {
       const e = error as Error & { status?: number };
@@ -123,7 +136,7 @@ export const bookingsRoutes = new Elysia({ prefix: '/bookings', tags: ['Bookings
           const seatsLeft = trip.seats - (accepted._sum.seats ?? 0);
           if (booking.seats > seatsLeft) throw asHttpError('Plus assez de places disponibles', 409);
           return tx.booking.update({ where: { id: booking.id }, data: { status: 'ACCEPTED' as const } });
-        });
+        }, TX_OPTIONS);
       }
       return prisma.booking.update({ where: { id: booking.id }, data: { status: body.status as BookingStatusLiteral } });
     } catch (error) {

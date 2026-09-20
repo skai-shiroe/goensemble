@@ -1,26 +1,46 @@
-import { useMemo, useState } from 'react';
-import { FlatList, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, FlatList, StyleSheet, Text, TextInput, View } from 'react-native';
 import EmptyState from '@/components/EmptyState';
 import TripCard from '@/components/TripCard';
 import { colors, radius, spacing, typography } from '@/theme';
-import { mockTrips } from '@/mock';
+import { api, mapApiTrip } from '@/lib/api';
+import type { ApiTrip } from '@/lib/api';
+import type { Trip } from '@/types';
 
 /**
  * Rechercher — liste des trajets (mock) + filtre textuel simple.
  * En Phase 3 : recherche géospatiale PostGIS + score de matching.
  */
 export default function SearchScreen() {
-  const [query, setQuery] = useState('');
+    const [query, setQuery] = useState('');
+  const [results, setResults] = useState<Trip[]>([]);
+  const [loading, setLoading] = useState(false);
 
-  const results = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return mockTrips;
-    return mockTrips.filter(
-      (t) =>
-        t.departure.toLowerCase().includes(q) ||
-        t.destination.toLowerCase().includes(q),
-    );
-  }, [query]);
+  // Recherche textuelle au fil de la frappe (délai 400ms).
+  const search = useCallback(async (q: string) => {
+    const trimmed = q.trim();
+    if (!trimmed) {
+      setResults([]);
+      return;
+    }
+    setLoading(true);
+    try {
+      const data = (await api.searchTrips({ q: trimmed, limit: 50 })) as ApiTrip[];
+      setResults(data.map((t) => mapApiTrip(t, 'passenger')));
+    } catch (e) {
+      if (__DEV__) console.warn('[rechercher] API indisponible:', (e as Error).message);
+      setResults([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      search(query);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [query, search]);
 
   return (
     <View style={styles.container}>
@@ -32,19 +52,24 @@ export default function SearchScreen() {
           placeholderTextColor={colors.textSecondary}
           value={query}
           onChangeText={setQuery}
+          returnKeyType="search"
         />
       </View>
+
+      {loading && <ActivityIndicator size="large" color={colors.primary} style={styles.loader} />}
 
       <FlatList
         data={results}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.list}
         ListEmptyComponent={
-          <EmptyState
-            icon="🗺️"
-            title="Aucun trajet trouvé"
-            subtitle="Essayez un autre quartier ou une autre heure. Les points de repère locaux fonctionnent aussi."
-          />
+          !loading && query ? (
+            <EmptyState
+              icon="🗺️"
+              title="Aucun trajet trouvé"
+              subtitle="Essayez un autre quartier ou une autre heure. Les points de repère locaux fonctionnent aussi."
+            />
+          ) : null
         }
         renderItem={({ item }) => <TripCard trip={item} />}
       />
@@ -66,5 +91,6 @@ const styles = StyleSheet.create({
     paddingVertical: spacing(3),
     marginTop: spacing(4),
   },
-  list: { padding: spacing(5) },
+    list: { padding: spacing(5) },
+  loader: { marginTop: spacing(4), alignSelf: 'center' },
 });

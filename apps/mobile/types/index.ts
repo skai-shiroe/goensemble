@@ -9,7 +9,7 @@ export interface User {
   phone: string;
   rating: number;
   tripsCount: number;
-  photoUrl?: string;
+    photoUrl?: string | null;
 }
 
 export interface Vehicle {

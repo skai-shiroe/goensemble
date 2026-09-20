@@ -1,8 +1,8 @@
 import { Elysia } from 'elysia';
 import { t } from 'elysia';
-import prisma from '@goensemble/database';
+import prisma, { isUniqueViolation } from '@goensemble/database';
 import { getAuthUser } from '../lib/auth';
-import { isUuid } from '../lib/util';
+import { isUuid, normalizeTogoPhone } from '../lib/util';
 
 export const usersRoutes = new Elysia({ prefix: '/users', tags: ['Users'] })
   .get('/me', async ({ headers, set }) => {
@@ -12,29 +12,68 @@ export const usersRoutes = new Elysia({ prefix: '/users', tags: ['Users'] })
     let user = await prisma.user.findUnique({ where: { id: auth.id } });
     if (!user) {
       // Premier contact : profil non créé côté app.
-      return { needProfile: true, id: auth.id, phone: auth.phone };
+      return { needProfile: true, profileComplete: false, id: auth.id, phone: auth.phone };
     }
     const vehicles = await prisma.vehicle.findMany({ where: { ownerId: user.id } });
-    return { ...user, vehicles };
+    // `profileComplete` pilote l'onboarding mobile : tant qu'aucun vrai numéro
+    // n'est renseigné (placeholder `pending:<id>`), l'app impose la saisie.
+    return { ...user, vehicles, profileComplete: normalizeTogoPhone(user.phone) !== null };
   })
   .put('/me', async ({ headers, body, set }) => {
     const auth = await getAuthUser(headers.authorization);
     if (!auth) { set.status = 401; return { error: 'Authentification requise' }; }
 
-    const user = await prisma.user.upsert({
-      where: { id: auth.id },
-      update: {
-        fullName: body.fullName ?? undefined,
-        photoUrl: body.photoUrl ?? undefined,
-      },
-      create: {
-        id: auth.id,
-        phone: auth.phone ?? body.phone ?? 'inconnu',
-        fullName: body.fullName ?? 'Utilisateur',
-        photoUrl: body.photoUrl,
-      },
-    });
-    return user;
+    // Téléphone fourni ? On le normalise (E.164) puis on vérifie sa disponibilité.
+    // Le téléphone est la clé de confiance du produit : il n'est révélé qu'après
+    // une réservation acceptée.
+    const requestedPhone = body.phone != null ? normalizeTogoPhone(body.phone) : null;
+    if (body.phone != null && !requestedPhone) {
+      set.status = 400;
+      return { error: 'Numéro invalide. Format attendu : +228 suivi de 8 ou 9 chiffres.' };
+    }
+
+    if (requestedPhone) {
+      // Un téléphone porté par un seul utilisateur.
+      const existing = await prisma.user.findUnique({
+        where: { phone: requestedPhone },
+        select: { id: true },
+      });
+      if (existing && existing.id !== auth.id) {
+        set.status = 409;
+        return { error: 'Ce numéro est déjà utilisé par un autre compte.' };
+      }
+    }
+
+    // `auth.phone` vaut `''` pour un compte Google → normalizeTogoPhone → null.
+    const authPhone = normalizeTogoPhone(auth.phone);
+
+    try {
+      const user = await prisma.user.upsert({
+        where: { id: auth.id },
+        update: {
+          fullName: body.fullName ?? undefined,
+          photoUrl: body.photoUrl ?? undefined,
+          phone: requestedPhone ?? undefined,
+        },
+        // Le placeholder "pending:<auth.id>" est unique par utilisateur → élimine
+        // le conflit P2002 sur la colonne `phone` pour les comptes Google sans tel.
+        create: {
+          id: auth.id,
+          phone: authPhone ?? requestedPhone ?? `pending:${auth.id}`,
+          fullName: body.fullName ?? 'Utilisateur',
+          photoUrl: body.photoUrl,
+        },
+      });
+      return user;
+    } catch (error) {
+      // 2e défense au cas où la contrainte @unique `phone` créerait un conflit
+      // (ex. données legacy). On renvoie un 409 exploitable côté mobile.
+      if (isUniqueViolation(error)) {
+        set.status = 409;
+        return { error: 'Conflit de téléphone. Veuillez réessayer ou contacter le support.' };
+      }
+      throw error; // → gestion globale d'erreur → 500
+    }
   }, {
     body: t.Object({
       fullName: t.Optional(t.String()),
@@ -74,6 +113,8 @@ export const usersRoutes = new Elysia({ prefix: '/users', tags: ['Users'] })
       orderBy: { createdAt: 'desc' },
     });
 
+    // On ne divulgue jamais le placeholder interne `pending:<id>`.
+    const phone = normalizeTogoPhone(user.phone);
     return {
       id: user.id,
       fullName: user.fullName,
@@ -81,8 +122,8 @@ export const usersRoutes = new Elysia({ prefix: '/users', tags: ['Users'] })
       rating: user.rating,
       tripsCount: user.tripsCount,
       vehicles,
-      phone: reveal ? user.phone : null,
-      phoneHidden: !reveal,
+      phone: reveal ? phone : null,
+      phoneHidden: !reveal || !phone,
     };
   }, {
     params: t.Object({ id: t.String() }),

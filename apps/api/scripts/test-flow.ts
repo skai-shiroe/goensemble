@@ -126,6 +126,50 @@ const searchOwn = await call('GET', '/trips/search?q=Ago&limit=5', dt);
 const searchOwnJson = (searchOwn.json as { driver?: { id: string } }[]) ?? [];
 console.log('GET /trips/search (conducteur) ->', searchOwn.status, '| propres trajets exclus:', !searchOwnJson.some((t) => t.driver?.id === driverId));
 
+// ============ Garde-fous telephone (etape A) ============
+const meAfterPut = await call('GET', '/users/me', dt);
+console.log(
+  'GET /users/me -> profileComplete:',
+  (meAfterPut.json as { profileComplete?: boolean }).profileComplete,
+);
+
+const badPhone = await call('PUT', '/users/me', dt, { phone: '123' });
+console.log('PUT /users/me (numero invalide) ->', badPhone.status, JSON.stringify(badPhone.json));
+
+const conflictPhone = await call('PUT', '/users/me', dt, { phone: '+22891' + stamp });
+console.log(
+  'PUT /users/me (numero deja pris) ->',
+  conflictPhone.status,
+  JSON.stringify(conflictPhone.json),
+);
+
+const spacedPhone = await call('PUT', '/users/me', dt, { phone: '+228 90 ' + stamp });
+console.log(
+  'PUT /users/me (saisie avec espaces) ->',
+  spacedPhone.status,
+  '| stocke:',
+  (spacedPhone.json as { phone?: string }).phone,
+);
+
+// ============ Garde-fous vehicules (etape C) ============
+// 1) Un vehicule utilise par un trajet a venir ne peut pas etre supprime.
+const delUsed = await call('DELETE', '/vehicles/' + vehicleId, dt);
+console.log('DELETE /vehicles/:id (trajet a venir) ->', delUsed.status, JSON.stringify(delUsed.json));
+
+// 2) Un vehicule libre se supprime normalement.
+const veh2 = await call('POST', '/vehicles', dt, { model: 'Yamaha XT', plate: 'TO 99 TG', seats: 2 });
+const veh2Id = (veh2.json as { id: string }).id;
+const delFree = await call('DELETE', '/vehicles/' + veh2Id, dt);
+console.log('DELETE /vehicles/:id (libre) ->', delFree.status, JSON.stringify(delFree.json));
+
+// 3) Un autre utilisateur ne peut pas le supprimer (404 : pas le proprietaire).
+const delForeign = await call('DELETE', '/vehicles/' + vehicleId, pt);
+console.log('DELETE /vehicles/:id (non proprietaire) ->', delForeign.status);
+
+// 4) Id malforme -> 404 (pas de 500 Prisma).
+const delBad = await call('DELETE', '/vehicles/pas-un-uuid', dt);
+console.log('DELETE /vehicles/:id malforme ->', delBad.status);
+
 // ============ Nettoyage des donnees de test ============
 // Les FK Prisma n'ont pas de onDelete: Cascade -> suppression dans l'ordre.
 try {

@@ -1,18 +1,56 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import EmptyState from '@/components/EmptyState';
 import { colors, radius, spacing, typography } from '@/theme';
-import { getUserById } from '@/mock';
+import { api } from '@/lib/api';
+import type { PublicUserProfile } from '@/lib/api';
 
 /**
  * Profil d'un conducteur (parcours UX, Étape B) :
  * identité, réputation, véhicule. Base de confiance du produit.
+ * Les données proviennent de GET /users/:id (téléphone dévoilé uniquement
+ * si une réservation acceptée relie le passager au conducteur).
  */
 export default function DriverScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const user = getUserById(id);
+  const [user, setUser] = useState<PublicUserProfile | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const loadUser = useCallback(async () => {
+    if (!id || typeof id !== 'string') return;
+    setLoading(true);
+    try {
+      const data = await api.getPublicUser(id);
+      setUser(data);
+    } catch (e) {
+      if (__DEV__) console.warn('[conducteur] API indisponible:', (e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    loadUser();
+  }, [loadUser]);
+
+  if (loading) {
+    return (
+      <View style={[styles.screen, { alignItems: 'center', justifyContent: 'center' }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
+      </View>
+    );
+  }
 
   if (!user) {
     return (
@@ -21,6 +59,9 @@ export default function DriverScreen() {
       </View>
     );
   }
+
+  const initial = user.fullName?.slice(0, 1) ?? '?';
+  const phoneDisplay = user.phoneHidden ? '••••••' : user.phone ?? '—';
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
@@ -31,25 +72,27 @@ export default function DriverScreen() {
 
       <View style={styles.headerCard}>
         <View style={styles.avatar}>
-          <Text style={styles.avatarText}>{user.fullName.slice(0, 1)}</Text>
+          <Text style={styles.avatarText}>{initial}</Text>
         </View>
-        <Text style={styles.name}>{user.fullName}</Text>
-        <Text style={styles.meta}>★ {user.rating} • {user.tripsCount} trajets partagés</Text>
+        <Text style={styles.name}>{user.fullName ?? 'Utilisateur'}</Text>
+        <Text style={styles.meta}>★ {user.rating.toFixed(1)} • {user.tripsCount} trajets partagés</Text>
         <View style={styles.verifiedBadge}>
           <Ionicons name="shield-checkmark" size={14} color={colors.primary} />
-          <Text style={styles.verifiedText}>Téléphone vérifié</Text>
+          <Text style={styles.verifiedText}>Compte vérifié</Text>
         </View>
       </View>
 
       <View style={styles.card}>
         <Text style={styles.sectionLabel}>Contact</Text>
-        <Text style={styles.value}>{user.phone}</Text>
-        <Text style={styles.hint}>Visible uniquement après confirmation d'une réservation.</Text>
+        <Text style={styles.value}>{phoneDisplay}</Text>
+        <Text style={styles.hint}>
+          {user.phoneHidden
+            ? "Visible uniquement après qu'une réservation soit acceptée."
+            : 'Numéro du conducteur.'}
+        </Text>
       </View>
 
-      <Pressable
-        onPress={() => Alert.alert('Signalement (mock)', 'Le signalement sera traité en Phase 4.')}
-      >
+      <Pressable onPress={() => Alert.alert('Signalement', 'Le signalement sera traité en Phase 4.')}>
         <Text style={styles.report}>⚠️ Signaler ce profil</Text>
       </Pressable>
     </ScrollView>

@@ -3,7 +3,7 @@ import { t } from 'elysia';
 import prisma from '@goensemble/database';
 import { getAuthUser } from '../lib/auth';
 import { acceptedBookingsInclude, haversineKm, withAvailableSeats } from '../lib/trips';
-import { clampLimit, isUuid } from '../lib/util';
+import { clampLimit, isUuid, normalizeTogoPhone } from '../lib/util';
 
 export const tripsRoutes = new Elysia({ prefix: '/trips', tags: ['Trips'] })
   .post('/', async ({ headers, body, set }) => {
@@ -13,10 +13,24 @@ export const tripsRoutes = new Elysia({ prefix: '/trips', tags: ['Trips'] })
     const vehicle = await prisma.vehicle.findFirst({ where: { id: body.vehicleId, ownerId: auth.id } });
     if (!vehicle) { set.status = 400; return { error: 'Vehicule introuvable ou non possede' }; }
 
+    if (body.seats != null && body.seats > vehicle.seats) {
+      set.status = 400;
+      return { error: `Ce vehicule ne compte que ${vehicle.seats} place(s).` };
+    }
+
+    // Le conducteur doit avoir un vrai numero de telephone : c'est la cle de
+    // confiance du covoiturage (revelée seulement apres reservation acceptee).
+    const driver = await prisma.user.findUnique({ where: { id: auth.id } });
+    const driverPhone = normalizeTogoPhone(driver?.phone) ?? normalizeTogoPhone(auth.phone);
+    if (!driverPhone) {
+      set.status = 403;
+      return { error: 'Renseignez votre numero de telephone dans votre profil avant de publier un trajet.' };
+    }
+
     await prisma.user.upsert({
       where: { id: auth.id },
       update: {},
-      create: { id: auth.id, phone: auth.phone ?? 'inconnu', fullName: 'Utilisateur' },
+      create: { id: auth.id, phone: driverPhone, fullName: 'Utilisateur' },
     });
 
     const waypointItems = (body.waypoints ?? []).map((w: { label: string; lat: number; lng: number; order?: number }, i: number) => ({ label: w.label, lat: w.lat, lng: w.lng, order: w.order ?? i }));

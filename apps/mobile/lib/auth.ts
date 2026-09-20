@@ -46,6 +46,16 @@ export function parseCallbackUrl(url: string): OAuthCallbackParams {
 let pending: Promise<Session> | null = null;
 const consumedCodes = new Set<string>();
 
+/**
+ * Reinitialise l'etat OAuth garde en memoire (echange en cours + codes
+ * consommes). A appeler a la deconnexion : sans cela, le compte suivant
+ * heriterait des codes PKCE du precedent et la connexion echouerait.
+ */
+export function resetOAuthState(): void {
+  pending = null;
+  consumedCodes.clear();
+}
+
 async function currentSession(): Promise<Session | null> {
   const { data } = await supabase.auth.getSession();
   return data.session;

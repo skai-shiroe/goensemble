@@ -1,11 +1,21 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import PrimaryButton from '@/components/PrimaryButton';
 import EmptyState from '@/components/EmptyState';
 import { colors, radius, spacing, typography } from '@/theme';
-import { getTripById } from '@/mock';
+import { api, mapApiTrip } from '@/lib/api';
+import type { ApiTrip } from '@/lib/api';
+import type { Trip } from '@/types';
 
 /**
  * Détail d'un trajet (parcours UX, Étape B) :
@@ -15,10 +25,47 @@ import { getTripById } from '@/mock';
 export default function TripDetailScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const trip = getTripById(id);
-  const [bookingState, setBookingState] = useState<'idle' | 'requested'>('idle');
+  const [trip, setTrip] = useState<Trip | null>(null);
+  const [myBooking, setMyBooking] = useState<{ id: string; status: string } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  if (!trip) {
+  const bookingState = myBooking?.status === 'ACCEPTED'
+    ? 'accepted' 
+    : myBooking?.status === 'PENDING'
+      ? 'requested'
+      : 'idle';
+
+  const loadTrip = useCallback(async () => {
+    if (!id || typeof id !== 'string') return;
+    setLoading(true);
+    try {
+      const data = (await api.getTrip(id)) as unknown as ApiTrip & {
+        myBooking: { id: string; status: string; seats: number } | null;
+      };
+      setTrip(mapApiTrip(data, 'passenger'));
+      setMyBooking(data.myBooking ?? null);
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    loadTrip();
+  }, [loadTrip]);
+
+  if (loading) {
+    return (
+      <View style={[styles.screen, { alignItems: 'center', justifyContent: 'center' }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
+      </View>
+    );
+  }
+
+  if (error || !trip) {
     return (
       <View style={styles.screen}>
         <EmptyState
@@ -30,25 +77,27 @@ export default function TripDetailScreen() {
     );
   }
 
+    const currentTrip = trip;
+
   const handleBooking = () => {
     Alert.alert(
       'Confirmer la réservation',
-      `Demander une place dans le trajet ${trip.departure} → ${trip.destination} ?\nContribution : ${trip.contribution} F`,
+      `Demander une place dans le trajet ${currentTrip.departure} → ${currentTrip.destination} ?\nContribution : ${currentTrip.contribution} F`,
       [
         { text: 'Annuler', style: 'cancel' },
-        {
-          text: 'Demander',
-          onPress: () => {
-            setBookingState('requested');
-            Alert.alert(
-              'Demande envoyée (mock)',
-              'Le conducteur va accepter ou refuser votre demande. Vous serez notifié.',
-            );
-          },
-        },
+        { text: 'Demander', onPress: confirmBooking },
       ],
     );
   };
+
+  async function confirmBooking() {
+    try {
+      const result = await api.createBooking({ tripId: currentTrip.id, seats: 1 });
+      setMyBooking({ id: result.id, status: result.status });
+    } catch (e) {
+      Alert.alert('Erreur', (e as Error).message);
+    }
+  }
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
@@ -108,7 +157,12 @@ export default function TripDetailScreen() {
         </View>
       </View>
 
-      {bookingState === 'requested' ? (
+            {bookingState === 'accepted' ? (
+        <View style={styles.successBox}>
+          <Ionicons name="checkmark-circle" size={24} color={colors.primary} />
+          <Text style={styles.successText}>Réservation acceptée ✅ — contact du conducteur dévoilé</Text>
+        </View>
+      ) : bookingState === 'requested' ? (
         <View style={styles.successBox}>
           <Ionicons name="checkmark-circle" size={24} color={colors.primary} />
           <Text style={styles.successText}>Demande envoyée — en attente de confirmation du conducteur</Text>
