@@ -1,8 +1,9 @@
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -25,12 +26,38 @@ import type { ApiVehicle } from '@/lib/api';
  */
 const STEPS = ['Itinéraire', 'Horaire', 'Places'] as const;
 
+/** « HH:MM » normalisé (ex. 07:05). */
+function formatHm(h: number, m: number): string {
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+/**
+ * Libellé lisible d'un départ : « Aujourd'hui à 07:00 », « Demain à 07:00 »,
+ * sinon « vendredi 26 septembre à 07:00 ».
+ */
+function formatDepartureLabel(d: Date): string {
+  const today = new Date();
+  const tomorrow = new Date(today);
+  tomorrow.setDate(today.getDate() + 1);
+  const sameDay = (a: Date, b: Date) => a.toDateString() === b.toDateString();
+  const time = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  if (sameDay(d, today)) return `Aujourd'hui à ${time}`;
+  if (sameDay(d, tomorrow)) return `Demain à ${time}`;
+  return `${d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })} à ${time}`;
+}
+
 export default function PublishScreen() {
   const router = useRouter();
   const [step, setStep] = useState(0);
   const [departure, setDeparture] = useState('');
   const [destination, setDestination] = useState('');
-  const [departureTime, setDepartureTime] = useState('');
+  const [dayOffset, setDayOffset] = useState<number | null>(null);
+  const [hour, setHour] = useState<number | null>(null);
+  const [minute, setMinute] = useState(0);
+  // Modale compacte de choix de l'heure (évite la grille 24 cases).
+  const [timePickerOpen, setTimePickerOpen] = useState(false);
+  const [draftHour, setDraftHour] = useState(7);
+  const [draftMinute, setDraftMinute] = useState(0);
   const [isRecurring, setIsRecurring] = useState(true);
   const [seats, setSeats] = useState('2');
   const [contribution, setContribution] = useState('500');
@@ -65,9 +92,82 @@ export default function PublishScreen() {
     return String(Math.min(n, max));
   };
 
+  /** Remet le wizard à zéro après une publication réussie. */
+  const resetForm = () => {
+    setStep(0);
+    setDeparture('');
+    setDestination('');
+    setDayOffset(null);
+    setHour(null);
+    setMinute(0);
+    setIsRecurring(true);
+    setSeats('2');
+    setContribution('500');
+    setTimePickerOpen(false);
+  };
+
+  const openTimePicker = () => {
+    if (hour != null) {
+      setDraftHour(hour);
+      setDraftMinute(minute);
+    } else {
+      // Par défaut : prochaine heure pleine (évite un départ déjà passé).
+      setDraftHour((new Date().getHours() + 1) % 24);
+      setDraftMinute(0);
+    }
+    setTimePickerOpen(true);
+  };
+
+  const confirmTime = () => {
+    setHour(draftHour);
+    setMinute(draftMinute);
+    setTimePickerOpen(false);
+  };
+
+  // --- Sélecteur de départ : jour (aujourd'hui → J+6) + heure + minutes ---
+  const dayOptions = useMemo(() => {
+    const base = new Date();
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(base);
+      d.setDate(base.getDate() + i);
+      const label =
+        i === 0
+          ? "Aujourd'hui"
+          : i === 1
+            ? 'Demain'
+            : d.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' });
+      return { offset: i, label };
+    });
+  }, []);
+
+  const HOURS = useMemo(() => Array.from({ length: 24 }, (_, i) => i), []);
+  const MINUTES = useMemo(() => Array.from({ length: 12 }, (_, i) => i * 5), []);
+
+  const buildDeparture = (offset: number, h: number, m: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() + offset);
+    d.setHours(h, m, 0, 0);
+    return d;
+  };
+
+  const selectedDeparture =
+    dayOffset != null && hour != null ? buildDeparture(dayOffset, hour, minute) : null;
+
+  // Un départ dans le passé est exclu de la recherche : on décale automatiquement
+  // à demain même heure pour un trajet récurrent, sinon on bloque la publication.
+  const isPastSelection = selectedDeparture != null && selectedDeparture.getTime() <= Date.now();
+
+  const effectiveDeparture = useMemo(() => {
+    if (selectedDeparture == null || dayOffset == null || hour == null) return null;
+    if (selectedDeparture.getTime() <= Date.now() && isRecurring) {
+      return buildDeparture(dayOffset + 1, hour, minute);
+    }
+    return selectedDeparture;
+  }, [selectedDeparture, dayOffset, hour, minute, isRecurring]);
+
   const canNext = () => {
     if (step === 0) return departure.trim() !== '' && destination.trim() !== '';
-    if (step === 1) return /^\d{1,2}:\d{2}$/.test(departureTime.trim());
+    if (step === 1) return selectedDeparture != null && !(isPastSelection && !isRecurring);
     return true;
   };
 
@@ -100,9 +200,13 @@ export default function PublishScreen() {
         return;
       }
 
-      const [h, m] = departureTime.split(':').map(Number);
-      const depDate = new Date();
-      depDate.setHours(h, m, 0, 0);
+      if (!effectiveDeparture || effectiveDeparture.getTime() <= Date.now()) {
+        Alert.alert(
+          'Horaire invalide',
+          "L'heure choisie est déjà passée. Choisissez un autre horaire ou activez « trajet récurrent » pour publier demain à la même heure.",
+        );
+        return;
+      }
 
       await api.createTrip({
         vehicleId: vehicle.id,
@@ -112,13 +216,17 @@ export default function PublishScreen() {
         fromLng: fromCoords[1],
         toLat: toCoords[0],
         toLng: toCoords[1],
-        departureTime: depDate.toISOString(),
+        departureTime: effectiveDeparture.toISOString(),
         contribution: Number(contribution) || 0,
         seats: Number(seats) || 4,
         isRecurring,
       });
 
-      Alert.alert('Trajet publié ✅', `${departure} → ${destination} est maintenant en ligne.`, [
+      const routeLabel = `${departure.trim()} → ${destination.trim()}`;
+      const whenLabel = formatDepartureLabel(effectiveDeparture);
+      resetForm();
+      void loadVehicles();
+      Alert.alert('Trajet publié ✅', `${routeLabel}\nDépart ${whenLabel}.`, [
         { text: 'OK', onPress: () => router.push('/(tabs)/profil') },
       ]);
     } catch (e) {
@@ -210,15 +318,51 @@ export default function PublishScreen() {
 
       {step === 1 && (
         <>
+          <Text style={styles.label}>Jour de départ</Text>
+          <View style={styles.chipWrap}>
+            {dayOptions.map((d) => (
+              <Pressable
+                key={d.offset}
+                style={[styles.chip, dayOffset === d.offset && styles.chipActive]}
+                onPress={() => setDayOffset(d.offset)}
+              >
+                <Text style={[styles.chipText, dayOffset === d.offset && styles.chipTextActive]}>
+                  {d.label}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+
           <Text style={styles.label}>Heure de départ</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Ex : 07:00"
-            placeholderTextColor={colors.textSecondary}
-            keyboardType="numbers-and-punctuation"
-            value={departureTime}
-            onChangeText={setDepartureTime}
-          />
+          <Pressable style={styles.timeButton} onPress={openTimePicker}>
+            <Ionicons name="time-outline" size={20} color={colors.primary} />
+            <Text style={[styles.timeButtonText, hour == null && styles.timeButtonPlaceholder]}>
+              {hour == null ? "Choisir l'heure" : formatHm(hour, minute)}
+            </Text>
+            <Ionicons name="chevron-down" size={18} color={colors.textSecondary} />
+          </Pressable>
+
+          {effectiveDeparture && (
+            <View
+              style={isPastSelection && !isRecurring ? styles.warnCard : styles.infoCard}
+            >
+              <Ionicons
+                name={isPastSelection && !isRecurring ? 'alert-circle' : 'time-outline'}
+                size={18}
+                color={isPastSelection && !isRecurring ? colors.danger : colors.primaryDark}
+              />
+              <Text
+                style={isPastSelection && !isRecurring ? styles.warnCardText : styles.infoCardText}
+              >
+                {isPastSelection
+                  ? isRecurring
+                    ? `Déjà ${formatDepartureLabel(selectedDeparture!)} — publié pour ${formatDepartureLabel(effectiveDeparture)} (trajet récurrent).`
+                    : `Déjà ${formatDepartureLabel(selectedDeparture!)} : choisissez une heure à venir ou activez « trajet récurrent ».`
+                  : `Départ ${formatDepartureLabel(effectiveDeparture)}`}
+              </Text>
+            </View>
+          )}
+
           <View style={styles.switchRow}>
             <Text style={styles.switchLabel}>Trajet récurrent (domicile-travail)</Text>
             <Switch
@@ -259,7 +403,9 @@ export default function PublishScreen() {
           <View style={styles.summary}>
             <Text style={styles.summaryTitle}>Récapitulatif</Text>
             <Text style={styles.summaryLine}>📍 {departure} → {destination}</Text>
-            <Text style={styles.summaryLine}>🕐 Départ à {departureTime}</Text>
+            <Text style={styles.summaryLine}>
+              🕐 Départ {effectiveDeparture ? formatDepartureLabel(effectiveDeparture) : '—'}
+            </Text>
             <Text style={styles.summaryLine}>
               ↻ {isRecurring ? 'Trajet récurrent' : 'Trajet ponctuel'}
             </Text>
@@ -288,6 +434,58 @@ export default function PublishScreen() {
           />
         </View>
       </View>
+
+      {/* Choix de l'heure : modale compacte à 2 colonnes (heures | minutes). */}
+      <Modal
+        visible={timePickerOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setTimePickerOpen(false)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setTimePickerOpen(false)} />
+        <View style={styles.modalSheet}>
+          <Text style={styles.modalTitle}>Heure de départ</Text>
+          <Text style={styles.modalPreview}>{formatHm(draftHour, draftMinute)}</Text>
+          <View style={styles.modalCols}>
+            <ScrollView style={styles.modalCol} contentContainerStyle={styles.modalColContent}>
+              {HOURS.map((h) => (
+                <Pressable
+                  key={h}
+                  style={[styles.modalRow, draftHour === h && styles.modalRowActive]}
+                  onPress={() => setDraftHour(h)}
+                >
+                  <Text style={[styles.modalRowText, draftHour === h && styles.modalRowTextActive]}>
+                    {formatHm(h, 0).slice(0, 2)}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+            <ScrollView style={styles.modalCol} contentContainerStyle={styles.modalColContent}>
+              {MINUTES.map((m) => (
+                <Pressable
+                  key={m}
+                  style={[styles.modalRow, draftMinute === m && styles.modalRowActive]}
+                  onPress={() => setDraftMinute(m)}
+                >
+                  <Text
+                    style={[styles.modalRowText, draftMinute === m && styles.modalRowTextActive]}
+                  >
+                    :{String(m).padStart(2, '0')}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+          <View style={styles.modalActions}>
+            <Pressable style={styles.modalCancel} onPress={() => setTimePickerOpen(false)}>
+              <Text style={styles.modalCancelText}>Annuler</Text>
+            </Pressable>
+            <Pressable style={styles.modalConfirm} onPress={confirmTime}>
+              <Text style={styles.modalConfirmText}>Valider</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -376,6 +574,95 @@ const styles = StyleSheet.create({
     marginTop: spacing(6),
   },
   switchLabel: { ...typography.body, flex: 1, paddingRight: spacing(4) },
+  chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing(2) },
+  chip: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    borderRadius: radius.round,
+    paddingHorizontal: spacing(4),
+    paddingVertical: spacing(2),
+  },
+  chipActive: { borderColor: colors.primary, backgroundColor: colors.primaryLight },
+  chipText: { ...typography.secondary, fontWeight: '600' },
+  chipTextActive: { color: colors.primaryDark, fontWeight: '700' },
+  timeButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing(3),
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing(4),
+    paddingVertical: spacing(4),
+  },
+  timeButtonText: { ...typography.body, flex: 1, fontWeight: '700' },
+  timeButtonPlaceholder: { color: colors.textSecondary, fontWeight: '400' },
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)' },
+  modalSheet: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    paddingHorizontal: spacing(5),
+    paddingTop: spacing(5),
+    paddingBottom: spacing(8),
+  },
+  modalTitle: { ...typography.subtitle, fontSize: 16, textAlign: 'center' },
+  modalPreview: {
+    fontSize: 34,
+    fontWeight: '700',
+    color: colors.primary,
+    textAlign: 'center',
+    marginTop: spacing(2),
+  },
+  modalCols: { flexDirection: 'row', gap: spacing(4), marginTop: spacing(5), height: 190 },
+  modalCol: { flex: 1, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md },
+  modalColContent: { paddingVertical: spacing(2) },
+  modalRow: { alignItems: 'center', paddingVertical: spacing(3) },
+  modalRowActive: { backgroundColor: colors.primaryLight },
+  modalRowText: { ...typography.body, color: colors.textSecondary },
+  modalRowTextActive: { color: colors.primaryDark, fontWeight: '700' },
+  modalActions: { flexDirection: 'row', gap: spacing(4), marginTop: spacing(5) },
+  modalCancel: {
+    flex: 1,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    paddingVertical: spacing(4),
+  },
+  modalCancelText: { ...typography.body, fontWeight: '600' },
+  modalConfirm: {
+    flex: 1,
+    alignItems: 'center',
+    backgroundColor: colors.primary,
+    borderRadius: radius.md,
+    paddingVertical: spacing(4),
+  },
+  modalConfirmText: { ...typography.body, color: colors.surface, fontWeight: '700' },
+  infoCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing(2),
+    backgroundColor: colors.primaryLight,
+    borderRadius: radius.md,
+    padding: spacing(4),
+    marginTop: spacing(5),
+  },
+  infoCardText: { ...typography.secondary, flex: 1, color: colors.primaryDark, fontWeight: '600' },
+  warnCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing(2),
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.danger,
+    borderRadius: radius.md,
+    padding: spacing(4),
+    marginTop: spacing(5),
+  },
+  warnCardText: { ...typography.secondary, flex: 1, color: colors.danger, fontWeight: '600' },
   row: { flexDirection: 'row', gap: spacing(4) },
   col: { flex: 1 },
   summary: {

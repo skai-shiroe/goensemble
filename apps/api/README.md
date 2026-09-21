@@ -24,12 +24,13 @@ bun api              # lance apps/api en mode watch sur http://localhost:3000
 | POST | /auth/otp | non | envoi code SMS (necessite fournisseur SMS Supabase) |
 | POST | /auth/verify | non | verifie le code, renvoie accessToken |
 | GET | /users/me | oui | profil + `vehicles` + `profileComplete` (false tant qu'aucun vrai téléphone n'est enregistré) |
+| GET | /users/me/overview | oui | vue agrégée (profil, véhicules, mes trajets, suggestions, réservations) — 1 requête pour l'accueil et le profil |
 | PUT | /users/me | oui | crée/met à jour le profil ; téléphone normalisé en `+228XXXXXXXX` (400 si invalide, 409 si déjà pris) |
 | GET | /users/:id | optionnelle | profil public d'un conducteur (vehicules, rating) — telephone revele seulement si reservation ACCEPTED |
 | GET | /vehicles | oui | vehicles du conducteur |
 | POST | /vehicles | oui | ajoute un vehicule |
 | DELETE | /vehicles/:id | oui | supprime un vehicule (409 si un trajet a venir l'utilise, 404 si non proprietaire) |
-| POST | /trips | oui | publie un trajet (+ waypoints) ; 403 si le conducteur n'a pas renseigne son telephone |
+| POST | /trips | oui | publie un trajet (+ waypoints) ; 403 si le conducteur n'a pas renseigne son telephone, 400 si le depart est dans le passe ou si les places depassent la capacite du vehicule |
 | GET | /trips/search?[fromLat&fromLng&toLat&toLng][&q][&limit] | optionnelle | trajets actifs a venir ; tri par proximite si coords, sinon par heure ; `q` filtre les libelles ; exclut ses propres trajets |
 | GET | /trips/mine[?upcoming=true][&limit] | oui | trajets du conducteur connecte (+ places restantes) |
 | GET | /trips/:id | optionnelle | detail d'un trajet (+ `myBooking` du passager connecte) |

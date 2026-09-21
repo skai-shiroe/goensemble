@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useFocusEffect } from 'expo-router';
 import EmptyState from '@/components/EmptyState';
 import TripCard from '@/components/TripCard';
 import { colors, radius, spacing, typography } from '@/theme';
@@ -8,24 +9,21 @@ import type { ApiTrip } from '@/lib/api';
 import type { Trip } from '@/types';
 
 /**
- * Rechercher — liste des trajets (mock) + filtre textuel simple.
- * En Phase 3 : recherche géospatiale PostGIS + score de matching.
+ * Rechercher — trajets à venir affichés par défaut (GET /trips/search),
+ * filtrés au fil de la frappe (délai 400 ms).
  */
 export default function SearchScreen() {
-    const [query, setQuery] = useState('');
+  const [query, setQuery] = useState('');
   const [results, setResults] = useState<Trip[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Recherche textuelle au fil de la frappe (délai 400ms).
-  const search = useCallback(async (q: string) => {
-    const trimmed = q.trim();
-    if (!trimmed) {
-      setResults([]);
-      return;
-    }
+  const load = useCallback(async (q: string) => {
     setLoading(true);
     try {
-      const data = (await api.searchTrips({ q: trimmed, limit: 50 })) as ApiTrip[];
+      const data = (await api.searchTrips({
+        q: q || undefined,
+        limit: 50,
+      })) as ApiTrip[];
       setResults(data.map((t) => mapApiTrip(t, 'passenger')));
     } catch (e) {
       if (__DEV__) console.warn('[rechercher] API indisponible:', (e as Error).message);
@@ -35,12 +33,36 @@ export default function SearchScreen() {
     }
   }, []);
 
+  // Recherche textuelle au fil de la frappe ; champ vidé => retour à la liste
+  // par défaut des trajets à venir.
   useEffect(() => {
+    const trimmed = query.trim();
+    if (!trimmed) {
+      void load('');
+      return;
+    }
     const t = setTimeout(() => {
-      search(query);
+      void load(trimmed);
     }, 400);
     return () => clearTimeout(t);
-  }, [query, search]);
+  }, [query, load]);
+
+  // Rafraîchit la liste par défaut au retour sur l'onglet (un trajet a pu être
+  // publié ou réservé entre-temps), sans perturber une recherche en cours.
+  const queryRef = useRef('');
+  queryRef.current = query;
+  const didMount = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (!didMount.current) {
+        didMount.current = true;
+        return;
+      }
+      if (!queryRef.current.trim()) void load('');
+    }, [load]),
+  );
+
+  const hasQuery = query.trim() !== '';
 
   return (
     <View style={styles.container}>
@@ -63,12 +85,20 @@ export default function SearchScreen() {
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.list}
         ListEmptyComponent={
-          !loading && query ? (
-            <EmptyState
-              icon="🗺️"
-              title="Aucun trajet trouvé"
-              subtitle="Essayez un autre quartier ou une autre heure. Les points de repère locaux fonctionnent aussi."
-            />
+          !loading ? (
+            hasQuery ? (
+              <EmptyState
+                icon="🗺️"
+                title="Aucun trajet trouvé"
+                subtitle="Essayez un autre quartier ou une autre heure. Les points de repère locaux fonctionnent aussi."
+              />
+            ) : (
+              <EmptyState
+                icon="🚗"
+                title="Aucun trajet à venir"
+                subtitle="Les trajets publiés par la communauté apparaîtront ici. Publiez le vôtre depuis l'onglet Publier."
+              />
+            )
           ) : null
         }
         renderItem={({ item }) => <TripCard trip={item} />}

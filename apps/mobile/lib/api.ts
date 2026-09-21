@@ -84,6 +84,18 @@ export interface ApiBooking {
   passenger?: ApiUser;
 }
 
+export interface ApiOverview {
+  profile: ApiUser & {
+    vehicles?: ApiVehicle[];
+    needProfile?: boolean;
+    profileComplete?: boolean;
+  };
+  vehicles: ApiVehicle[];
+  myTrips: ApiTrip[];
+  suggestions: ApiTrip[];
+  bookings: { asPassenger: ApiBooking[]; asDriver: ApiBooking[] };
+}
+
 export interface PublicUserProfile {
   id: string;
   fullName: string | null;
@@ -190,6 +202,11 @@ export const api = {
     apiFetch<
       ApiUser & { vehicles?: ApiVehicle[]; needProfile?: boolean; profileComplete?: boolean }
     >('/users/me'),
+  /**
+   * Vue agregee (accueil + profil) : profil, vehicules, mes trajets, suggestions
+   * et reservations en UNE seule requete — evite 4 allers-retours reseau.
+   */
+  getOverview: () => apiFetch<ApiOverview>('/users/me/overview'),
   updateMe: (body: { fullName?: string; photoUrl?: string; phone?: string }) =>
     apiFetch<ApiUser>('/users/me', { method: 'PUT', body: JSON.stringify(body) }),
   listVehicles: () => apiFetch<ApiVehicle[]>('/vehicles'),
@@ -234,6 +251,12 @@ export const api = {
     apiFetch<{ id: string; status: string; seats: number }>('/bookings', {
       method: 'POST',
       body: JSON.stringify(body),
+    }),
+  /** Conducteur : accepter/refuser une demande. Passager : annuler la sienne. */
+  updateBookingStatus: (id: string, status: 'ACCEPTED' | 'REJECTED' | 'CANCELLED') =>
+    apiFetch<ApiBooking>(`/bookings/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
     }),
 
   // --- Profil public (conducteur vu par un passager) ---

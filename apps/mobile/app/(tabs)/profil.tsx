@@ -1,5 +1,14 @@
-import { useCallback, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import { useCallback, useRef, useState } from 'react';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import EmptyState from '@/components/EmptyState';
@@ -14,6 +23,33 @@ import type { Trip } from '@/types';
 
 type MeProfile = ApiUser & { vehicles?: ApiVehicle[]; needProfile?: boolean };
 
+/** Libellés/statuts des demandes de réservation (schéma BookingStatus). */
+const BOOKING_STATUS: Record<string, { label: string; color: string }> = {
+  PENDING: { label: 'En attente', color: colors.warning },
+  ACCEPTED: { label: 'Acceptée', color: colors.primaryDark },
+  REJECTED: { label: 'Refusée', color: colors.danger },
+  CANCELLED: { label: 'Annulée', color: colors.textSecondary },
+  COMPLETED: { label: 'Terminée', color: colors.textSecondary },
+};
+
+/** « Aujourd'hui 07:00 » / « Demain 07:00 » / « 26 sept. 07:00 ». */
+function formatWhen(iso: string): string {
+  const d = new Date(iso);
+  const today = new Date();
+  const tomorrow = new Date(today);
+  tomorrow.setDate(today.getDate() + 1);
+  const time = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  if (d.toDateString() === today.toDateString()) return `Aujourd'hui ${time}`;
+  if (d.toDateString() === tomorrow.toDateString()) return `Demain ${time}`;
+  return `${d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })} ${time}`;
+}
+
+/** Un numéro réel (jamais un placeholder `pending:<id>` d'un compte OAuth). */
+function realPhone(phone?: string | null): string | null {
+  if (!phone || phone.startsWith('pending:')) return null;
+  return phone;
+}
+
 /**
  * Profil — données réelles via l'API :
  * GET /users/me (profil + véhicules), GET /trips/mine (trajets publiés),
@@ -24,40 +60,35 @@ export default function ProfileScreen() {
   const gate = useProfileGate();
   const [profile, setProfile] = useState<MeProfile | null>(null);
   const [myTrips, setMyTrips] = useState<Trip[]>([]);
-  const [myBookings, setMyBookings] = useState<Trip[]>([]);
+  // Demandes que j'ai envoyées (passager) et demandes reçues sur mes trajets (conducteur).
+  const [passengerBookings, setPassengerBookings] = useState<ApiBooking[]>([]);
+  const [receivedBookings, setReceivedBookings] = useState<ApiBooking[]>([]);
+  const [actionId, setActionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Passe à true après un premier chargement réussi (rechargements silencieux).
+  const loaded = useRef(false);
 
-  const loadAll = useCallback(async () => {
+  const loadAll = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       setError(null);
-      setLoading(true);
-      const [me, trips, bookings] = await Promise.allSettled([
-        api.getMe(),
-        api.getMyTrips(false),
-        api.getMyBookings(),
-      ]);
+      // UNE seule requête : profil + véhicules + trajets publiés + réservations.
+      const data = await api.getOverview();
 
-      if (me.status === 'fulfilled') {
+      if (data.profile.needProfile) {
+        setError('Profil incomplet : renseignez votre numéro de téléphone.');
+      } else {
         // Le profil est garanti complet par le garde d'onboarding (_layout) :
         // plus de création opportuniste ici — l'API exige un vrai téléphone.
-        setProfile(me.value as MeProfile);
-      } else if (me.status === 'rejected') {
-        const msg = (me.reason as { message?: string }).message ?? 'Erreur profil.';
-        setError(msg || 'Impossible de charger le profil.');
+        setProfile(data.profile as MeProfile);
       }
 
-      if (trips.status === 'fulfilled') {
-        setMyTrips(trips.value.map((t) => mapApiTrip(t, 'driver')));
-      }
-
-      if (bookings.status === 'fulfilled' && bookings.value.asPassenger.length > 0) {
-        setMyBookings(
-          bookings.value.asPassenger.map((b) =>
-            mapApiTrip((b as ApiBooking).trip, 'passenger'),
-          ),
-        );
-      }
+      setMyTrips(data.myTrips.map((t) => mapApiTrip(t, 'driver')));
+      setPassengerBookings(data.bookings.asPassenger);
+      setReceivedBookings(data.bookings.asDriver);
+      loaded.current = true;
     } catch (e) {
       // On ne vide pas le profil déjà chargé : une erreur ponctuelle (réseau,
       // PUT refusé…) doit afficher un message actionnable, pas un écran vide.
@@ -67,16 +98,23 @@ export default function ProfileScreen() {
       );
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
   // Recharge à chaque retour sur l'onglet (utile après l'ajout d'un véhicule
-  // ou une réservation acceptée ailleurs dans l'app).
+  // ou une réservation acceptée ailleurs dans l'app). En silence dès qu'un
+  // chargement a déjà réussi : les données restent affichées.
   useFocusEffect(
     useCallback(() => {
-      loadAll();
+      void loadAll(loaded.current);
     }, [loadAll]),
   );
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    void loadAll(true);
+  }, [loadAll]);
 
   const handleSignOut = async () => {
     // Réinitialise l'état OAuth en mémoire (codes PKCE consommés, échange
@@ -110,12 +148,31 @@ export default function ProfileScreen() {
     );
   };
 
+  /** Conducteur : accepter ou refuser une demande reçue. */
+  const handleDecision = async (booking: ApiBooking, status: 'ACCEPTED' | 'REJECTED') => {
+    setActionId(booking.id);
+    try {
+      await api.updateBookingStatus(booking.id, status);
+      await loadAll();
+    } catch (e) {
+      Alert.alert('Action impossible', (e as Error).message);
+    } finally {
+      setActionId(null);
+    }
+  };
+
   const displayName = profile?.fullName ?? 'Utilisateur';
   const initial = displayName.slice(0, 1).toUpperCase();
   const vehicles = profile?.vehicles ?? [];
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
+      }
+    >
       <View style={styles.headerCard}>
         {profile?.photoUrl ? (
           <View style={styles.avatarWrap}>
@@ -177,6 +234,63 @@ export default function ProfileScreen() {
         </Pressable>
       </View>
 
+      <Text style={styles.sectionTitle}>Demandes reçues</Text>
+      {receivedBookings.length === 0 ? (
+        <EmptyState
+          icon="📥"
+          title="Aucune demande reçue"
+          subtitle="Les passagers intéressés par vos trajets apparaîtront ici."
+        />
+      ) : (
+        receivedBookings.map((b) => {
+          const st = BOOKING_STATUS[b.status] ?? BOOKING_STATUS.PENDING;
+          const phone = realPhone(b.passenger?.phone);
+          return (
+            <View key={b.id} style={styles.bookingCard}>
+              <View style={styles.bookingHead}>
+                <Text style={styles.bookingName}>{b.passenger?.fullName ?? 'Passager'}</Text>
+                <View style={[styles.badge, { borderColor: st.color }]}>
+                  <Text style={[styles.badgeText, { color: st.color }]}>{st.label}</Text>
+                </View>
+              </View>
+              <Text style={styles.bookingMeta}>
+                {b.trip.fromLabel} → {b.trip.toLabel} • {formatWhen(b.trip.departureTime)}
+              </Text>
+              <Text style={styles.bookingMeta}>{b.seats} place(s) demandée(s)</Text>
+              {b.status === 'PENDING' && (
+                <View style={styles.bookingActions}>
+                  <Pressable
+                    style={[
+                      styles.decisionBtn,
+                      styles.acceptBtn,
+                      actionId === b.id && styles.decisionBtnBusy,
+                    ]}
+                    disabled={actionId === b.id}
+                    onPress={() => handleDecision(b, 'ACCEPTED')}
+                  >
+                    <Text style={styles.decisionTextOk}>Accepter</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[
+                      styles.decisionBtn,
+                      styles.rejectBtn,
+                      actionId === b.id && styles.decisionBtnBusy,
+                    ]}
+                    disabled={actionId === b.id}
+                    onPress={() => handleDecision(b, 'REJECTED')}
+                  >
+                    <Text style={styles.decisionTextNo}>Refuser</Text>
+                  </Pressable>
+                </View>
+              )}
+              {b.status === 'ACCEPTED' && phone && (
+                <Text style={styles.bookingPhone}>📞 {phone}</Text>
+              )}
+            </View>
+          );
+        })
+      )}
+
       <Text style={styles.sectionTitle}>Mes trajets publiés</Text>
       {myTrips.length === 0 ? (
         <EmptyState
@@ -189,21 +303,46 @@ export default function ProfileScreen() {
       )}
 
       <Text style={styles.sectionTitle}>Mes réservations</Text>
-      {myBookings.length === 0 ? (
+      {passengerBookings.length === 0 ? (
         <EmptyState
           icon="🎟️"
           title="Aucune réservation"
           subtitle="Trouvez un trajet compatible depuis l'onglet Rechercher."
         />
       ) : (
-        myBookings.map((trip) => <TripCard key={trip.id} trip={trip} />)
+        passengerBookings.map((b) => {
+          const st = BOOKING_STATUS[b.status] ?? BOOKING_STATUS.PENDING;
+          const phone = realPhone(b.trip.driver?.phone);
+          return (
+            <View key={b.id} style={styles.bookingCard}>
+              <View style={styles.bookingHead}>
+                <Text style={styles.bookingName}>
+                  {b.trip.fromLabel} → {b.trip.toLabel}
+                </Text>
+                <View style={[styles.badge, { borderColor: st.color }]}>
+                  <Text style={[styles.badgeText, { color: st.color }]}>{st.label}</Text>
+                </View>
+              </View>
+              <Text style={styles.bookingMeta}>
+                avec {b.trip.driver?.fullName ?? 'Conducteur'} • {formatWhen(b.trip.departureTime)}
+              </Text>
+              {b.status === 'ACCEPTED'
+                ? phone && <Text style={styles.bookingPhone}>📞 {phone}</Text>
+                : (
+                  <Text style={styles.bookingMeta}>
+                    Le numéro du conducteur s'affichera après acceptation.
+                  </Text>
+                )}
+            </View>
+          );
+        })
       )}
 
       {error && !loading && (
         <View style={styles.errorCard}>
           <Ionicons name="alert-circle" size={18} color={colors.danger} />
           <Text style={styles.errorText}>{error}</Text>
-          <Pressable style={styles.retryBtn} onPress={loadAll}>
+          <Pressable style={styles.retryBtn} onPress={() => void loadAll(false)}>
             <Text style={styles.retryText}>Réessayer</Text>
           </Pressable>
         </View>
@@ -320,6 +459,48 @@ const styles = StyleSheet.create({
     marginTop: spacing(8),
     marginBottom: spacing(3),
   },
+  bookingCard: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing(4),
+    marginBottom: spacing(3),
+  },
+  bookingHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing(2),
+  },
+  bookingName: { ...typography.body, fontWeight: '700', flex: 1 },
+  badge: {
+    borderWidth: 1,
+    borderRadius: radius.round,
+    paddingHorizontal: spacing(3),
+    paddingVertical: spacing(1),
+  },
+  badgeText: { fontSize: 11, fontWeight: '700' },
+  bookingMeta: { ...typography.secondary, marginTop: spacing(2) },
+  bookingPhone: {
+    ...typography.body,
+    marginTop: spacing(2),
+    color: colors.primaryDark,
+    fontWeight: '600',
+  },
+  bookingActions: { flexDirection: 'row', gap: spacing(3), marginTop: spacing(4) },
+  decisionBtn: {
+    flex: 1,
+    alignItems: 'center',
+    borderRadius: radius.sm,
+    paddingVertical: spacing(3),
+    borderWidth: 1,
+  },
+  acceptBtn: { backgroundColor: colors.primary, borderColor: colors.primary },
+  rejectBtn: { backgroundColor: colors.surface, borderColor: colors.danger },
+  decisionTextOk: { ...typography.body, color: colors.surface, fontWeight: '700' },
+  decisionTextNo: { ...typography.body, color: colors.danger, fontWeight: '700' },
+  decisionBtnBusy: { opacity: 0.5 },
   signOut: {
     flexDirection: 'row',
     alignItems: 'center',

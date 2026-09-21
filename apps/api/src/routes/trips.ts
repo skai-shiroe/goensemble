@@ -18,6 +18,24 @@ export const tripsRoutes = new Elysia({ prefix: '/trips', tags: ['Trips'] })
       return { error: `Ce vehicule ne compte que ${vehicle.seats} place(s).` };
     }
 
+    // Un trajet se publie forcement dans le futur : sans ce garde-fou, un depart
+    // dans le passe reste invisible (la recherche ne renvoie que departureTime >= now)
+    // et l'utilisateur croit que sa publication a echoue.
+    const departure = new Date(body.departureTime);
+    if (Number.isNaN(departure.getTime())) {
+      set.status = 400;
+      return { error: 'Date de depart invalide' };
+    }
+    if (departure.getTime() <= Date.now()) {
+      set.status = 400;
+      return { error: "L'heure de depart est deja passee. Choisissez une date et une heure a venir." };
+    }
+    const arrival = body.arrivalTime ? new Date(body.arrivalTime) : null;
+    if (arrival && (Number.isNaN(arrival.getTime()) || arrival.getTime() <= departure.getTime())) {
+      set.status = 400;
+      return { error: "L'heure d'arrivee doit etre posterieure au depart." };
+    }
+
     // Le conducteur doit avoir un vrai numero de telephone : c'est la cle de
     // confiance du covoiturage (revelée seulement apres reservation acceptee).
     const driver = await prisma.user.findUnique({ where: { id: auth.id } });
@@ -44,8 +62,8 @@ export const tripsRoutes = new Elysia({ prefix: '/trips', tags: ['Trips'] })
         fromLng: body.fromLng,
         toLat: body.toLat,
         toLng: body.toLng,
-        departureTime: new Date(body.departureTime),
-        arrivalTime: body.arrivalTime ? new Date(body.arrivalTime) : undefined,
+        departureTime: departure,
+        arrivalTime: arrival ?? undefined,
         contribution: body.contribution ?? 0,
         seats: body.seats ?? 4,
         isRecurring: body.isRecurring ?? false,
